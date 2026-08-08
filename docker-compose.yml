@@ -295,6 +295,10 @@ services:
   # `supportsCustomConnections` fica com o padrão da imagem (desligado):
   # o aluno não consegue criar outras conexões, só usar a que já existe.
   #
+  # dbeaver/cloudbeaver.conf desliga o ícone de chat com IA do CloudBeaver
+  # (feature "ai") — sem valor didático aqui, e evita pedir uma API key de
+  # LLM só pra abrir o cliente SQL. Ver comentário no topo desse arquivo.
+  #
   # Só sobe depois que `pipeline-init` termina com sucesso — de propósito,
   # pra garantir que bronze/silver/gold já existam antes mesmo da porta
   # 8978 aceitar conexão (o mesmo padrão que `minio-init` já usa aqui
@@ -330,6 +334,13 @@ services:
       # cópia em dbeaver-workspace, e editar este arquivo não tem mais
       # efeito — ver README para como resetar.
       - ./dbeaver/initial-data-sources.conf:/opt/cloudbeaver/conf/initial-data-sources.conf:ro
+      # O CloudBeaver lê este arquivo do disco a cada start, mas grava um
+      # snapshot resolvido dele dentro do volume dbeaver-workspace já no
+      # primeiro start — então editar este arquivo depois da primeira
+      # subida tem o mesmo problema do initial-data-sources.conf acima:
+      # só tem efeito resetando o volume (ver README). Desliga o ícone
+      # de chat com IA do CloudBeaver (ver comentário no topo do arquivo).
+      - ./dbeaver/cloudbeaver.conf:/opt/cloudbeaver/conf/cloudbeaver.conf:ro
 
 volumes:
   postgres-data:
