@@ -19,4 +19,11 @@ COPY lakehouse_lab /home/jovyan/lakehouse_lab
 RUN chown -R jovyan:users /home/jovyan/lakehouse_lab
 ENV PYTHONPATH=/home/jovyan
 
+# A imagem base (jupyter/scipy-notebook) já vem com uma pasta "work"
+# em /home/jovyan, pensada pra quem não monta um volume próprio. Este
+# projeto sempre monta ./jupyter/notebooks ali, então "work" nunca é
+# usada — só aparece vazia no explorador de arquivos, confundindo o
+# aluno. Removida de propósito para não existir quando o ambiente sobe.
+RUN rm -rf /home/jovyan/work
+
 USER jovyan

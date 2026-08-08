@@ -8,14 +8,16 @@
 #                                                ├─> Hive Metastore ─┐
 #   MinIO (armazenamento S3-compatível) ─────────┘                  ├─> Trino (SQL)
 #                                                                    │
-#   Jupyter (lakehouse_lab pré-instalado; o pipeline bronze -> ──────┘
-#            silver -> gold é construído célula a célula lá dentro)
+#   pipeline-init (trino/init/construir_pipeline.py) constrói bronze -> ┘
+#   silver -> gold sozinho, uma vez, assim que tudo acima está pronto —
+#   igual o postgres/init/*.sql prepara o Postgres, mas pro Trino. É
+#   infraestrutura, não algo que o aluno edita ou reroda célula a
+#   célula; o mesmo script pode ser rodado de novo na mão de dentro do
+#   Jupyter (ver README) se quiser atualizar o lakehouse depois de
+#   inserir dado novo no Postgres.
 #
-#   pipeline-init roda esse mesmo notebook uma vez sozinho, em
-#   background, assim que tudo acima está pronto — então bronze/silver/
-#   gold já existem antes mesmo do aluno abrir qualquer coisa. Não
-#   estraga a aula: o notebook é idempotente, o instrutor continua
-#   rodando ele célula a célula ao vivo normalmente.
+#   Jupyter (lakehouse_lab pré-instalado; notebook exploratório pra
+#            consultar e visualizar o que o pipeline já construiu)
 #
 #   DBeaver-web (CloudBeaver), à parte: cliente SQL web já conectado
 #   no Postgres, direto no schema "schema" — pra inspecionar a fonte
@@ -184,23 +186,33 @@ services:
   # -------------------------------------------------------------
   # JUPYTER — laboratório exploratório do aluno. Já vem com o
   # pacote `lakehouse_lab` instalado: `import lakehouse_lab as lh`
-  # e todas as conexões (Trino, MinIO, Postgres) já funcionam.
-  # O pipeline bronze -> silver -> gold é construído dentro do
-  # notebook `01_construir_pipeline.ipynb`, célula a célula.
+  # e todas as conexões (Trino, MinIO, Postgres) já funcionam. O
+  # pipeline bronze -> silver -> gold já foi construído sozinho pelo
+  # `pipeline-init` (ver trino/init/construir_pipeline.py) — aqui é só
+  # pra explorar o resultado (notebook `explorando_o_lakehouse.ipynb`).
   #
   # `command` desliga token e senha (testado: sem isso, mesmo com
-  # JUPYTER_TOKEN="" o servidor gera um token aleatório e pede login) e
+  # JUPYTER_TOKEN="" o servidor gera um token aleatório e pede login),
   # fixa a interface padrão como o JupyterLab (`/lab`) — já era o
   # comportamento padrão desta imagem, mas deixamos explícito de
   # propósito pra não depender de um "padrão" que pode mudar em outra
-  # versão. Só faz sentido sem senha porque a porta 8888 não é exposta
-  # pra fora da máquina do aluno — ver README para o porquê disso ser
-  # seguro aqui.
+  # versão — e restringe a raiz do explorador de arquivos a
+  # `/home/jovyan/notebooks` (`--ServerApp.root_dir`), pra não aparecer
+  # nada além dos notebooks: nem a pasta `trino-init` (montada abaixo),
+  # nem arquivos de configuração do próprio Jupyter. Isso só afeta o
+  # que a UI do navegador de arquivos e a API de conteúdo do Jupyter
+  # enxergam — comandos rodados pelo kernel (`!python /home/jovyan/
+  # trino-init/...`) continuam funcionando normalmente, porque isso
+  # acontece pelo lado do sistema operacional, não pela API do Jupyter
+  # (testado). Só faz sentido sem senha porque a porta 8888 não é
+  # exposta pra fora da máquina do aluno — ver README.
   # -------------------------------------------------------------
   jupyter:
     build: ./jupyter
     container_name: lakehouse-jupyter
-    command: start-notebook.sh --ServerApp.token='' --ServerApp.password='' --ServerApp.default_url='/lab'
+    command: >
+      start-notebook.sh --ServerApp.token='' --ServerApp.password=''
+      --ServerApp.default_url='/lab' --ServerApp.root_dir='/home/jovyan/notebooks'
     depends_on:
       - trino
       - minio
@@ -220,26 +232,26 @@ services:
       - "8888:8888"
     volumes:
       - ./jupyter/notebooks:/home/jovyan/notebooks
+      # Só leitura: dá pra rodar o pipeline de novo na mão (terminal do
+      # JupyterLab, ou `!python ...` numa célula) sem editar o script
+      # por engano — ver trino/init/construir_pipeline.py.
+      - ./trino/init:/home/jovyan/trino-init:ro
 
   # -------------------------------------------------------------
-  # PIPELINE-INIT — roda o notebook 01_construir_pipeline.ipynb uma vez,
-  # sozinho, em background, assim que Trino/Postgres/MinIO ficam prontos.
-  # Existe só pra garantir que bronze/silver/gold já existam quando o
-  # aluno abrir o DBeaver-web ou o Trino, sem precisar rodar nada na mão
-  # antes. `--output-dir /tmp --output ...` (em vez de `--inplace`) é de
-  # propósito: executa o notebook de verdade (grava no MinIO, cria as
-  # tabelas no Trino/Hive Metastore — o que interessa aqui), mas grava o
-  # resultado (com outputs, números de célula etc.) num arquivo joguei-
-  # fora dentro do container, sem sujar o `.ipynb` de verdade que o
-  # aluno abre no Jupyter. Testado: o `.ipynb` original fica byte a byte
-  # idêntico antes/depois (md5sum bateu).
+  # PIPELINE-INIT — roda trino/init/construir_pipeline.py uma vez,
+  # sozinho, em background, assim que Trino/Postgres/MinIO ficam
+  # prontos. Existe só pra garantir que bronze/silver/gold já existam
+  # quando o aluno abrir o DBeaver-web ou o Trino, sem precisar rodar
+  # nada na mão antes — o mesmo papel que `postgres/init/*.sql` cumpre
+  # pro Postgres, só que via um serviço próprio (o Trino não tem um
+  # mecanismo de "rodar isso na primeira subida" embutido como o
+  # Postgres tem). Por ser um script (não mais um notebook), não tem
+  # "output" nenhum pra se preocupar em sujar — só efeitos reais
+  # (arquivos no MinIO, tabelas no Trino/Hive Metastore).
   #
-  # Isso não estraga a aula ao vivo: o notebook é idempotente (cada
-  # célula faz DROP + CREATE), então o instrutor continua rodando
-  # `01_construir_pipeline.ipynb` célula a célula na frente da turma
-  # normalmente — só que agora, em vez de partir de um Trino vazio, já
-  # existe alguma coisa pra mostrar mesmo antes disso (ex: se algum
-  # aluno abrir o DBeaver-web primeiro, curioso, já vê dado de verdade).
+  # Idempotente (cada tabela é sempre DROP + CREATE), então rodar de
+  # novo não tem problema — inclusive é assim que se atualiza o
+  # lakehouse depois de inserir dado novo no Postgres (ver README).
   # -------------------------------------------------------------
   pipeline-init:
     build: ./jupyter
@@ -263,11 +275,8 @@ services:
       LAKEHOUSE_PG_DB: ${POSTGRES_DB}
       LAKEHOUSE_PG_SCHEMA: ${POSTGRES_SCHEMA}
     volumes:
-      - ./jupyter/notebooks:/home/jovyan/notebooks
-    command: >
-      jupyter nbconvert --to notebook --execute
-      --output-dir /tmp --output pipeline_executado.ipynb
-      /home/jovyan/notebooks/01_construir_pipeline.ipynb
+      - ./trino/init:/home/jovyan/trino-init:ro
+    command: python3 /home/jovyan/trino-init/construir_pipeline.py
 
   # -------------------------------------------------------------
   # DBEAVER-WEB (CloudBeaver) — cliente SQL web para o aluno inspecionar
