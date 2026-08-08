@@ -43,7 +43,7 @@ services:
   # -------------------------------------------------------------
   postgres:
     image: postgres:16.14
-    container_name: lakehouse-postgres
+    container_name: data_lakehouse_101-postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -55,9 +55,9 @@ services:
       - ./postgres/init:/docker-entrypoint-initdb.d
     healthcheck:
       # -d explícito porque, sem ele, o pg_isready tenta conectar num banco
-      # com o mesmo nome do usuário (aqui, "lakehouse") — que não existe —
-      # e isso polui o log com "FATAL: database ... does not exist" a cada
-      # checagem, mesmo o container estando saudável de verdade.
+      # com o mesmo nome do usuário (aqui, POSTGRES_USER, "trilha") — que
+      # não existe — e isso polui o log com "FATAL: database ... does
+      # not exist" a cada checagem, mesmo o container estando saudável.
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
@@ -76,7 +76,7 @@ services:
     # falta aqui: toda ação administrativa deste projeto já roda via
     # `mc` (minio-init) ou é só leitura (ver bronze/silver/gold pelo
     # Console). Ver README para o histórico dessa mudança.
-    container_name: lakehouse-minio
+    container_name: data_lakehouse_101-minio
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
@@ -98,7 +98,7 @@ services:
   # -------------------------------------------------------------
   minio-init:
     image: minio/mc:RELEASE.2025-08-13T08-35-41Z
-    container_name: lakehouse-minio-init
+    container_name: data_lakehouse_101-minio-init
     depends_on:
       minio:
         condition: service_healthy
@@ -120,7 +120,7 @@ services:
     image: starburstdata/hive:3.1.2-e.18
     # Testada e funcionando em 08/2026. Se uma tag futura não existir mais
     # ou mudar de comportamento, veja a seção "Troubleshooting" no README.
-    container_name: lakehouse-hive-metastore
+    container_name: data_lakehouse_101-hive-metastore
     depends_on:
       postgres:
         condition: service_healthy
@@ -173,7 +173,7 @@ services:
   # -------------------------------------------------------------
   trino:
     image: trinodb/trino:483
-    container_name: lakehouse-trino
+    container_name: data_lakehouse_101-trino
     depends_on:
       - hive-metastore
     ports:
@@ -209,7 +209,7 @@ services:
   # -------------------------------------------------------------
   jupyter:
     build: ./jupyter
-    container_name: lakehouse-jupyter
+    container_name: data_lakehouse_101-jupyter
     command: >
       start-notebook.sh --ServerApp.token='' --ServerApp.password=''
       --ServerApp.default_url='/lab' --ServerApp.root_dir='/home/jovyan/notebooks'
@@ -255,7 +255,7 @@ services:
   # -------------------------------------------------------------
   pipeline-init:
     build: ./jupyter
-    container_name: lakehouse-pipeline-init
+    container_name: data_lakehouse_101-pipeline-init
     depends_on:
       trino:
         condition: service_healthy
@@ -304,7 +304,7 @@ services:
   # -------------------------------------------------------------
   dbeaver:
     image: dbeaver/cloudbeaver:26.1.4
-    container_name: lakehouse-dbeaver
+    container_name: data_lakehouse_101-dbeaver
     depends_on:
       postgres:
         condition: service_healthy
