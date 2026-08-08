@@ -1,0 +1,263 @@
+# =====================================================================
+# LABORATÓRIO DE DATA LAKEHOUSE
+# =====================================================================
+# Sobe um lakehouse completo e pré-conectado — só armazenamento e
+# consulta, sem orquestrador, para manter o foco didático:
+#
+#   Postgres (fonte OLTP simulada + metastore) ─┐
+#                                                ├─> Hive Metastore ─┐
+#   MinIO (armazenamento S3-compatível) ─────────┘                  ├─> Trino (SQL)
+#                                                                    │
+#   Jupyter (lakehouse_lab pré-instalado; o pipeline bronze -> ──────┘
+#            silver -> gold é construído célula a célula lá dentro)
+#
+#   DBeaver-web (CloudBeaver), à parte: cliente SQL web já conectado
+#   no Postgres, direto no schema "schema" — pra inspecionar a fonte
+#   sem precisar do Jupyter nem instalar nada na máquina do aluno.
+#
+# Para o aluno, o único comando necessário é:
+#   docker compose up -d
+#
+# URLs depois de subir (nenhuma pede credencial do aluno, exceto o
+# Console do MinIO — limitação do próprio MinIO, ver README):
+#   Jupyter      -> http://localhost:8888  (sem login)
+#   MinIO        -> http://localhost:9001  (console web, login: ver .env)
+#   Trino        -> http://localhost:8082  (UI de queries, sem login)
+#   DBeaver-web  -> http://localhost:8978  (sem login, já conectado)
+# =====================================================================
+
+services:
+
+  # -------------------------------------------------------------
+  # POSTGRES — dupla função:
+  #  1) simula um sistema transacional (loja) que vira a origem dos dados
+  #  2) guarda os metadados do Hive Metastore (catálogo de tabelas do Trino)
+  # -------------------------------------------------------------
+  postgres:
+    image: postgres:16.14
+    container_name: lakehouse-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      # -d explícito porque, sem ele, o pg_isready tenta conectar num banco
+      # com o mesmo nome do usuário (aqui, "lakehouse") — que não existe —
+      # e isso polui o log com "FATAL: database ... does not exist" a cada
+      # checagem, mesmo o container estando saudável de verdade.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # -------------------------------------------------------------
+  # MINIO — armazenamento de objetos S3-compatível.
+  # As camadas bronze/silver/gold são pastas (prefixos) dentro
+  # de um único bucket "lakehouse".
+  # -------------------------------------------------------------
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    # Pinada numa release recente, de propósito SEM o Console clássico de
+    # administração (a MinIO removeu ações administrativas do Console
+    # open-source em 2025 e empurrou pra versão paga, AIStor). Não faz
+    # falta aqui: toda ação administrativa deste projeto já roda via
+    # `mc` (minio-init) ou é só leitura (ver bronze/silver/gold pelo
+    # Console). Ver README para o histórico dessa mudança.
+    container_name: lakehouse-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "9000:9000"   # API S3
+      - "9001:9001"   # Console web
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # -------------------------------------------------------------
+  # MINIO-INIT — tarefa única: cria o bucket e as "pastas"
+  # bronze/silver/gold para já nascerem visíveis no console.
+  # -------------------------------------------------------------
+  minio-init:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    container_name: lakehouse-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: /bin/sh /scripts/minio-init.sh
+    volumes:
+      - ./scripts/minio-init.sh:/scripts/minio-init.sh
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET}
+
+  # -------------------------------------------------------------
+  # HIVE METASTORE — catálogo que registra, para o Trino, quais
+  # tabelas existem, suas colunas e onde estão os arquivos no MinIO.
+  # É a peça "invisível" que transforma "arquivos soltos em S3" em
+  # "tabelas consultáveis por SQL". Metadados guardados no Postgres.
+  # -------------------------------------------------------------
+  hive-metastore:
+    image: starburstdata/hive:3.1.2-e.18
+    # Testada e funcionando em 08/2026. Se uma tag futura não existir mais
+    # ou mudar de comportamento, veja a seção "Troubleshooting" no README.
+    container_name: lakehouse-hive-metastore
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      HIVE_METASTORE_DRIVER: org.postgresql.Driver
+      HIVE_METASTORE_JDBC_URL: jdbc:postgresql://postgres:5432/metastore_db
+      HIVE_METASTORE_USER: ${POSTGRES_USER}
+      HIVE_METASTORE_PASSWORD: ${POSTGRES_PASSWORD}
+      # Não é usada por nenhuma tabela deste projeto (bronze/silver/gold
+      # sempre declaram sua própria location) — é só o local padrão do
+      # Hive Metastore para schemas/tabelas criados sem location
+      # explícita. Sem isso, esse caso cairia num path local inválido
+      # dentro do container e quebraria com um erro confuso.
+      HIVE_METASTORE_WAREHOUSE_DIR: s3://${MINIO_BUCKET}/warehouse/
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      S3_PATH_STYLE_ACCESS: "true"
+      REGION: ""
+      S3_BUCKET: ""
+      # O script de entrada dessa imagem checa com `test -v` (existe a
+      # variável?) sob `set -e` — precisam estar declaradas mesmo vazias,
+      # senão o container aborta na inicialização.
+      GOOGLE_CLOUD_KEY_FILE_PATH: ""
+      AZURE_ADL_CLIENT_ID: ""
+      AZURE_ADL_CREDENTIAL: ""
+      AZURE_ADL_REFRESH_URL: ""
+      AZURE_ABFS_STORAGE_ACCOUNT: ""
+      AZURE_ABFS_ACCESS_KEY: ""
+      AZURE_WASB_STORAGE_ACCOUNT: ""
+      AZURE_ABFS_OAUTH: ""
+      AZURE_ABFS_OAUTH_TOKEN_PROVIDER: ""
+      AZURE_ABFS_OAUTH_CLIENT_ID: ""
+      AZURE_ABFS_OAUTH_SECRET: ""
+      AZURE_ABFS_OAUTH_ENDPOINT: ""
+      AZURE_WASB_ACCESS_KEY: ""
+    ports:
+      - "9083:9083"
+
+  # -------------------------------------------------------------
+  # TRINO — motor de consulta SQL. Enxerga duas fontes (catalogs):
+  #   - "lakehouse": as camadas bronze/silver/gold no MinIO (via Hive Metastore)
+  #   - "postgres":  o sistema transacional "fonte", ao vivo
+  # Isso permite até fazer JOIN entre o Postgres e o data lake numa
+  # única query — ótimo para mostrar "federação" na aula.
+  # -------------------------------------------------------------
+  trino:
+    image: trinodb/trino:483
+    container_name: lakehouse-trino
+    depends_on:
+      - hive-metastore
+    ports:
+      # 8082 no host (não 8080) para não colidir com outros projetos
+      # Docker que já usem essa porta (ex.: outro Airflow local).
+      - "8082:8080"
+    volumes:
+      - ./trino/etc:/etc/trino
+
+  # -------------------------------------------------------------
+  # JUPYTER — laboratório exploratório do aluno. Já vem com o
+  # pacote `lakehouse_lab` instalado: `import lakehouse_lab as lh`
+  # e todas as conexões (Trino, MinIO, Postgres) já funcionam.
+  # O pipeline bronze -> silver -> gold é construído dentro do
+  # notebook `01_construir_pipeline.ipynb`, célula a célula.
+  #
+  # `command` desliga token e senha (testado: sem isso, mesmo com
+  # JUPYTER_TOKEN="" o servidor gera um token aleatório e pede login) e
+  # fixa a interface padrão como o JupyterLab (`/lab`) — já era o
+  # comportamento padrão desta imagem, mas deixamos explícito de
+  # propósito pra não depender de um "padrão" que pode mudar em outra
+  # versão. Só faz sentido sem senha porque a porta 8888 não é exposta
+  # pra fora da máquina do aluno — ver README para o porquê disso ser
+  # seguro aqui.
+  # -------------------------------------------------------------
+  jupyter:
+    build: ./jupyter
+    container_name: lakehouse-jupyter
+    command: start-notebook.sh --ServerApp.token='' --ServerApp.password='' --ServerApp.default_url='/lab'
+    depends_on:
+      - trino
+      - minio
+      - postgres
+    environment:
+      LAKEHOUSE_TRINO_HOST: trino
+      LAKEHOUSE_S3_ENDPOINT: http://minio:9000
+      LAKEHOUSE_S3_ACCESS_KEY: ${MINIO_ROOT_USER}
+      LAKEHOUSE_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      LAKEHOUSE_S3_BUCKET: ${MINIO_BUCKET}
+      LAKEHOUSE_PG_HOST: postgres
+      LAKEHOUSE_PG_USER: ${POSTGRES_USER}
+      LAKEHOUSE_PG_PASSWORD: ${POSTGRES_PASSWORD}
+      LAKEHOUSE_PG_DB: ${POSTGRES_DB}
+      LAKEHOUSE_PG_SCHEMA: ${POSTGRES_SCHEMA}
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./jupyter/notebooks:/home/jovyan/notebooks
+
+  # -------------------------------------------------------------
+  # DBEAVER-WEB (CloudBeaver) — cliente SQL web para o aluno inspecionar
+  # o Postgres "fonte" e o Trino sem precisar instalar nada na máquina
+  # dele. Sobe com duas conexões pré-configuradas e visíveis para
+  # qualquer um que abrir a página (acesso anônimo, sem tela de login)
+  # — ver dbeaver/initial-data-sources.conf:
+  #   - "postgres": direto no schema "schema" (a fonte) — árvore de
+  #     navegação restrita a esse schema e suas 4 tabelas, o resto
+  #     (public, roles, extensions etc.) fica escondido de propósito.
+  #   - "trino": direto no catálogo "lakehouse" (bronze/silver/gold)
+  # O aluno só abre http://localhost:8978 e clica na conexão que quiser.
+  # (o nome "schema" está fixo em dbeaver/initial-data-sources.conf, que
+  # não lê o .env — ver POSTGRES_SCHEMA lá para o porquê)
+  #
+  # `supportsCustomConnections` fica com o padrão da imagem (desligado):
+  # o aluno não consegue criar outras conexões, só usar a que já existe.
+  # -------------------------------------------------------------
+  dbeaver:
+    image: dbeaver/cloudbeaver:26.1.4
+    container_name: lakehouse-dbeaver
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Só usadas para destravar o assistente de primeira configuração
+      # (sem isso o CloudBeaver fica esperando um admin configurar pela
+      # UI). Não usadas no dia a dia da aula — o aluno nunca faz login.
+      CB_ADMIN_NAME: ${DBEAVER_ADMIN_USER}
+      CB_ADMIN_PASSWORD: ${DBEAVER_ADMIN_PASSWORD}
+      CB_SERVER_NAME: "Lakehouse DBeaver"
+      CB_SERVER_URL: "http://localhost:8978/"
+      # Sem isso, a conexão pré-configurada existiria mas ficaria
+      # invisível para o usuário anônimo (só o admin a veria).
+      CLOUDBEAVER_APP_GRANT_CONNECTIONS_ACCESS_TO_ANONYMOUS_TEAM: "true"
+    ports:
+      - "8978:8978"
+    volumes:
+      - dbeaver-workspace:/opt/cloudbeaver/workspace
+      # Só copiado para dentro do workspace na primeira subida (volume
+      # vazio); depois disso o CloudBeaver passa a gerenciar sua própria
+      # cópia em dbeaver-workspace, e editar este arquivo não tem mais
+      # efeito — ver README para como resetar.
+      - ./dbeaver/initial-data-sources.conf:/opt/cloudbeaver/conf/initial-data-sources.conf:ro
+
+volumes:
+  postgres-data:
+  minio-data:
+  dbeaver-workspace:
