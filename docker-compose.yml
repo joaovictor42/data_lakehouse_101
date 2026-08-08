@@ -11,6 +11,12 @@
 #   Jupyter (lakehouse_lab pré-instalado; o pipeline bronze -> ──────┘
 #            silver -> gold é construído célula a célula lá dentro)
 #
+#   pipeline-init roda esse mesmo notebook uma vez sozinho, em
+#   background, assim que tudo acima está pronto — então bronze/silver/
+#   gold já existem antes mesmo do aluno abrir qualquer coisa. Não
+#   estraga a aula: o notebook é idempotente, o instrutor continua
+#   rodando ele célula a célula ao vivo normalmente.
+#
 #   DBeaver-web (CloudBeaver), à parte: cliente SQL web já conectado
 #   no Postgres, direto no schema "schema" — pra inspecionar a fonte
 #   sem precisar do Jupyter nem instalar nada na máquina do aluno.
@@ -216,6 +222,54 @@ services:
       - ./jupyter/notebooks:/home/jovyan/notebooks
 
   # -------------------------------------------------------------
+  # PIPELINE-INIT — roda o notebook 01_construir_pipeline.ipynb uma vez,
+  # sozinho, em background, assim que Trino/Postgres/MinIO ficam prontos.
+  # Existe só pra garantir que bronze/silver/gold já existam quando o
+  # aluno abrir o DBeaver-web ou o Trino, sem precisar rodar nada na mão
+  # antes. `--output-dir /tmp --output ...` (em vez de `--inplace`) é de
+  # propósito: executa o notebook de verdade (grava no MinIO, cria as
+  # tabelas no Trino/Hive Metastore — o que interessa aqui), mas grava o
+  # resultado (com outputs, números de célula etc.) num arquivo joguei-
+  # fora dentro do container, sem sujar o `.ipynb` de verdade que o
+  # aluno abre no Jupyter. Testado: o `.ipynb` original fica byte a byte
+  # idêntico antes/depois (md5sum bateu).
+  #
+  # Isso não estraga a aula ao vivo: o notebook é idempotente (cada
+  # célula faz DROP + CREATE), então o instrutor continua rodando
+  # `01_construir_pipeline.ipynb` célula a célula na frente da turma
+  # normalmente — só que agora, em vez de partir de um Trino vazio, já
+  # existe alguma coisa pra mostrar mesmo antes disso (ex: se algum
+  # aluno abrir o DBeaver-web primeiro, curioso, já vê dado de verdade).
+  # -------------------------------------------------------------
+  pipeline-init:
+    build: ./jupyter
+    container_name: lakehouse-pipeline-init
+    depends_on:
+      trino:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      LAKEHOUSE_TRINO_HOST: trino
+      LAKEHOUSE_S3_ENDPOINT: http://minio:9000
+      LAKEHOUSE_S3_ACCESS_KEY: ${MINIO_ROOT_USER}
+      LAKEHOUSE_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      LAKEHOUSE_S3_BUCKET: ${MINIO_BUCKET}
+      LAKEHOUSE_PG_HOST: postgres
+      LAKEHOUSE_PG_USER: ${POSTGRES_USER}
+      LAKEHOUSE_PG_PASSWORD: ${POSTGRES_PASSWORD}
+      LAKEHOUSE_PG_DB: ${POSTGRES_DB}
+      LAKEHOUSE_PG_SCHEMA: ${POSTGRES_SCHEMA}
+    volumes:
+      - ./jupyter/notebooks:/home/jovyan/notebooks
+    command: >
+      jupyter nbconvert --to notebook --execute
+      --output-dir /tmp --output pipeline_executado.ipynb
+      /home/jovyan/notebooks/01_construir_pipeline.ipynb
+
+  # -------------------------------------------------------------
   # DBEAVER-WEB (CloudBeaver) — cliente SQL web para o aluno inspecionar
   # o Postgres "fonte" e o Trino sem precisar instalar nada na máquina
   # dele. Sobe com duas conexões pré-configuradas e visíveis para
@@ -231,6 +285,13 @@ services:
   #
   # `supportsCustomConnections` fica com o padrão da imagem (desligado):
   # o aluno não consegue criar outras conexões, só usar a que já existe.
+  #
+  # Só sobe depois que `pipeline-init` termina com sucesso — de propósito,
+  # pra garantir que bronze/silver/gold já existam antes mesmo da porta
+  # 8978 aceitar conexão (o mesmo padrão que `minio-init` já usa aqui
+  # pra `hive-metastore`). Se `pipeline-init` falhar, o DBeaver-web não
+  # sobe; ver Troubleshooting no README pra como recuperar sem perder
+  # o resto do ambiente.
   # -------------------------------------------------------------
   dbeaver:
     image: dbeaver/cloudbeaver:26.1.4
@@ -238,6 +299,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      pipeline-init:
+        condition: service_completed_successfully
     environment:
       # Só usadas para destravar o assistente de primeira configuração
       # (sem isso o CloudBeaver fica esperando um admin configurar pela
