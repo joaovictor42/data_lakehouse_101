@@ -155,11 +155,13 @@ services:
       - "9083:9083"
 
   # -------------------------------------------------------------
-  # TRINO — motor de consulta SQL. Enxerga duas fontes (catalogs):
-  #   - "lakehouse": as camadas bronze/silver/gold no MinIO (via Hive Metastore)
-  #   - "postgres":  o sistema transacional "fonte", ao vivo
-  # Isso permite até fazer JOIN entre o Postgres e o data lake numa
-  # única query — ótimo para mostrar "federação" na aula.
+  # TRINO — motor de consulta SQL. Enxerga só um catálogo, "lakehouse":
+  # as camadas bronze/silver/gold no MinIO (via Hive Metastore). De
+  # propósito sem um catálogo "postgres" apontando pra fonte ao vivo —
+  # isso já foi removido (ver trino/etc/catalog/), pra manter o Trino
+  # focado só no data lake. O Postgres "fonte" continua acessível
+  # normalmente, só que direto (via `lh.postgres()` no Jupyter ou a
+  # conexão "postgres" do DBeaver-web), não através do Trino.
   # -------------------------------------------------------------
   trino:
     image: trinodb/trino:483

@@ -37,8 +37,7 @@ O login de administrador do DBeaver-web (`DBEAVER_ADMIN_USER` / `DBEAVER_ADMIN_P
 3. Abra o **Jupyter** (http://localhost:8888, notebook `01_construir_pipeline.ipynb`) e rode célula a célula. Cada célula é uma etapa do pipeline (extrair → registrar bronze → construir silver → construir gold) — pare em cada uma e explique o que está acontecendo.
 4. Enquanto roda, abra o **MinIO Console** (http://localhost:9001) e mostre as pastas `bronze/`, `silver/`, `gold/` dentro do bucket `lakehouse` enchendo de arquivos Parquet em tempo real — esse é o "aha" visual da aula.
 5. Abra o notebook `02_explorando_o_lakehouse.ipynb` e mostre como o mesmo dado é consultado por SQL via Trino, sem os alunos precisarem saber onde/como ele está fisicamente guardado. Dá pra mostrar a mesma coisa no **DBeaver-web**, na conexão **"trino"** — chega direto no catálogo `lakehouse`, então `SELECT * FROM bronze.customers` já funciona sem qualificar nada.
-6. Bônus: no notebook 02, mostre a query que junta o Postgres "ao vivo" com o data lake numa única consulta — ótimo gancho para explicar o papel do Trino como motor de federação. A mesma conexão "trino" do DBeaver-web também enxerga o catálogo `postgres` (é só escrever `postgres.schema.customers`), se quiser mostrar isso fora do notebook.
-7. Para mostrar o pipeline reagindo a dado novo: insira uma linha em `orders`/`order_items` via `lh.postgres()` (célula do notebook) e rode o `01_construir_pipeline.ipynb` de novo — os alunos veem o `gold.sales_by_day` mudar.
+6. Para mostrar o pipeline reagindo a dado novo: insira uma linha em `orders`/`order_items` via `lh.postgres()` (célula do notebook) e rode o `01_construir_pipeline.ipynb` de novo — os alunos veem o `gold.sales_by_day` mudar.
 
 ## Arquitetura
 
@@ -58,8 +57,8 @@ MinIO (armazenamento S3) ──────────────────�
 
 - **MinIO**: armazenamento S3-compatível. As camadas bronze/silver/gold são pastas dentro de um único bucket `lakehouse`.
 - **Hive Metastore**: registra, para o Trino, quais tabelas existem e onde estão os arquivos no MinIO — é o que transforma "arquivos soltos" em "tabelas consultáveis por SQL". Usa o Postgres como banco de metadados (peça de infraestrutura, não aparece na aula).
-- **Trino**: motor de consulta SQL, com dois catálogos: `lakehouse` (as camadas) e `postgres` (a fonte, ao vivo).
-- **DBeaver-web (CloudBeaver)**: cliente SQL web pra inspecionar o Postgres e o Trino sem precisar instalar nada — abre sem login, com duas conexões já prontas: **"postgres"** (direto no schema `schema`) e **"trino"** (direto no catálogo `lakehouse`, mas o catálogo `postgres` também é visível na mesma conexão).
+- **Trino**: motor de consulta SQL, com um único catálogo: `lakehouse` (as camadas bronze/silver/gold). De propósito sem um catálogo apontando pro Postgres "fonte" — ver "Por que o Trino não enxerga o Postgres" abaixo.
+- **DBeaver-web (CloudBeaver)**: cliente SQL web pra inspecionar o Postgres e o Trino sem precisar instalar nada — abre sem login, com duas conexões já prontas: **"postgres"** (direto no schema `schema`) e **"trino"** (direto no catálogo `lakehouse`).
 - **Jupyter**: onde a aula acontece. Pacote `lakehouse_lab` pré-instalado (`import lakehouse_lab as lh`) com todas as conexões prontas (Postgres, MinIO, Trino) e variáveis/atalhos para os caminhos das camadas (`lh.bronze_path(...)`, `lh.silver_path(...)`, `lh.gold_path(...)`). Dois notebooks:
   - `01_construir_pipeline.ipynb` — monta bronze → silver → gold, célula a célula, com o SQL/Python visível.
   - `02_explorando_o_lakehouse.ipynb` — consulta e visualiza o que foi construído.
@@ -68,14 +67,29 @@ MinIO (armazenamento S3) ──────────────────�
 
 As 4 tabelas da fonte (`customers`, `products`, `orders`, `order_items`) vivem no schema `schema` (criado em `postgres/init/02_dados_fonte.sql`), não no `public` padrão do Postgres. É só pra reduzir o que o aluno precisa entender: tanto o `lakehouse_lab` (`lh.postgres()`) quanto a conexão "postgres" do DBeaver-web já abrem com esse schema como padrão, então ninguém precisa saber o que é `public` nem navegar pelos schemas de sistema do Postgres (`pg_catalog` etc.) pra achar as 4 tabelas que importam. Se quiser mudar o nome, o valor está em `POSTGRES_SCHEMA` no `.env` — mas como esse arquivo é só documentativo (nem o `postgres/init/02_dados_fonte.sql` nem o `dbeaver/initial-data-sources.conf` leem o `.env`), mudar o nome exige editar os três lugares junto.
 
+### Por que o Trino não enxerga o Postgres
+
+O Trino deste laboratório tem um único catálogo (`lakehouse`), de propósito. Já existiu um segundo catálogo `postgres` (o "sistema fonte", ao vivo) — dava pra fazer `SELECT` federado juntando Postgres e data lake numa única query — mas foi removido pra manter o Trino focado só no papel dele aqui: consultar as camadas bronze/silver/gold. Isso não tira acesso nenhum ao Postgres: ele continua totalmente acessível, só que direto (via `lh.postgres()` no Jupyter, ou a conexão "postgres" do DBeaver-web), sem passar pelo Trino.
+
+Se quiser trazer esse catálogo de volta, é só recriar `trino/etc/catalog/postgres.properties`:
+
+```properties
+connector.name=postgresql
+connection-url=jdbc:postgresql://postgres:5432/database
+connection-user=trilha
+connection-password=trilha123
+```
+
+(troque `database` por `${POSTGRES_DB}` do `.env` se tiver mudado) e depois `docker compose up -d --build trino`. A conexão "trino" do DBeaver-web voltaria a enxergar `postgres.schema.customers` automaticamente, sem precisar mexer em mais nada.
+
 ### As duas conexões do DBeaver-web
 
 O `dbeaver/initial-data-sources.conf` pré-configura duas conexões (ambas visíveis pro aluno sem login, e ele não consegue apagar nem editar nenhuma das duas):
 
 - **"postgres"**: driver Postgres, aponta pro schema `schema` — é a "fonte" da aula. A árvore de navegação dessa conexão é restrita de propósito: abrir "postgres" mostra só `database` → `schema` → as 4 tabelas, direto — sem os schemas de sistema do Postgres (já ficavam ocultos por padrão), sem o schema `public` (vazio, mas que ainda apareceria) e sem as pastas extras que o CloudBeaver mostra por padrão (Roles, Extensions, Event Triggers, Storage, Administer, System Info). Ver os comentários em `dbeaver/initial-data-sources.conf` pra como isso foi feito (chaves `navigator-*` e `filters`) e como desfazer, se um dia quiser ver a árvore completa.
-- **"trino"**: driver Trino (`generic:trino_jdbc`, já embutido no CloudBeaver Community, sem precisar baixar driver nenhum), aponta pro catálogo `lakehouse` — é a mesma visão SQL que os notebooks usam (`bronze`, `silver`, `gold`). O Trino deste projeto não tem autenticação configurada (ver `trino/etc/config.properties`), então o `userName` na conexão é só um valor fixo (`student`) sem senha de verdade. Essa conexão não tem a mesma restrição de navegador da "postgres" — o pedido era só reduzir a visão do Postgres.
+- **"trino"**: driver Trino (`generic:trino_jdbc`, já embutido no CloudBeaver Community, sem precisar baixar driver nenhum), aponta pro catálogo `lakehouse` — é a mesma visão SQL que os notebooks usam (`bronze`, `silver`, `gold`), e é o único catálogo que existe (ver "Por que o Trino não enxerga o Postgres" acima). O Trino deste projeto não tem autenticação configurada (ver `trino/etc/config.properties`), então o `userName` na conexão é só um valor fixo (`student`) sem senha de verdade. Essa conexão não tem a mesma restrição de navegador da "postgres" — o pedido era só reduzir a visão do Postgres.
 
-> Este ambiente usa tabelas Hive/Parquet "puras" (sem Iceberg/Delta Lake), então é um **data lake com SQL federado**, não um lakehouse com ACID/time-travel completo. Isso foi uma escolha deliberada para manter o primeiro contato simples. Se quiser evoluir para uma "aula 3" sobre lakehouse "de verdade" (schema evolution, time travel), o próximo passo natural é trocar o formato das tabelas para Apache Iceberg — a peça que falta é só essa.
+> Este ambiente usa tabelas Hive/Parquet "puras" (sem Iceberg/Delta Lake), então é um **data lake consultável por SQL**, não um lakehouse com ACID/time-travel completo. Isso foi uma escolha deliberada para manter o primeiro contato simples. Se quiser evoluir para uma "aula 3" sobre lakehouse "de verdade" (schema evolution, time travel), o próximo passo natural é trocar o formato das tabelas para Apache Iceberg — a peça que falta é só essa.
 
 ## Resetar o ambiente
 
@@ -88,7 +102,7 @@ docker compose up -d --build
 
 ## Status: testado de ponta a ponta
 
-Este ambiente foi validado em 08/2026 com um `docker compose down -v && docker compose up -d --build` do zero, com **todas as imagens fixadas em versões exatas** (nenhuma usa `:latest`): `postgres:16.14`, `minio/minio:RELEASE.2025-09-07T16-13-09Z`, `minio/mc:RELEASE.2025-08-13T08-35-41Z`, `starburstdata/hive:3.1.2-e.18`, `trinodb/trino:483`, `dbeaver/cloudbeaver:26.1.4`, e o Jupyter fixado pelo digest do `jupyter/scipy-notebook` no `Dockerfile`. Os 7 serviços sobem saudáveis, os dois notebooks (`01_construir_pipeline.ipynb` e `02_explorando_o_lakehouse.ipynb`) rodam de ponta a ponta via `jupyter nbconvert --execute` sem erro, os arquivos aparecem em `bronze/`, `silver/`, `gold/` no MinIO, as tabelas gold batem com os dados inseridos, o DBeaver-web abre já conectado e anônimo com as duas conexões ("postgres" e "trino") funcionando de verdade — inclusive um `SELECT` real em `gold.sales_by_day` via a conexão Trino, e a árvore de navegação da conexão "postgres" batendo exatamente `database → schema → customers/order_items/orders/products` (sem `public`, sem schemas de sistema) — incluindo confirmar que `database` e `schema` funcionam sem aspas tanto como identificadores do Postgres quanto em queries do Trino (`SELECT * FROM postgres.schema.customers`) — tudo testado direto pela API do CloudBeaver a partir de uma sessão anônima nova, e o Jupyter abre direto em `/lab` (`curl http://localhost:8888/lab` devolve `200`, sem redirect de login) — sem nenhuma intervenção manual.
+Este ambiente foi validado em 08/2026 com um `docker compose down -v && docker compose up -d --build` do zero, com **todas as imagens fixadas em versões exatas** (nenhuma usa `:latest`): `postgres:16.14`, `minio/minio:RELEASE.2025-09-07T16-13-09Z`, `minio/mc:RELEASE.2025-08-13T08-35-41Z`, `starburstdata/hive:3.1.2-e.18`, `trinodb/trino:483`, `dbeaver/cloudbeaver:26.1.4`, e o Jupyter fixado pelo digest do `jupyter/scipy-notebook` no `Dockerfile`. Os 7 serviços sobem saudáveis, os dois notebooks (`01_construir_pipeline.ipynb` e `02_explorando_o_lakehouse.ipynb`) rodam de ponta a ponta via `jupyter nbconvert --execute` sem erro, os arquivos aparecem em `bronze/`, `silver/`, `gold/` no MinIO, as tabelas gold batem com os dados inseridos, o DBeaver-web abre já conectado e anônimo com as duas conexões ("postgres" e "trino") funcionando de verdade — inclusive um `SELECT` real em `gold.sales_by_day` via a conexão Trino, e a árvore de navegação da conexão "postgres" batendo exatamente `database → schema → customers/order_items/orders/products` (sem `public`, sem schemas de sistema). Também confirmado que o Trino só enxerga o catálogo `lakehouse` (`SHOW CATALOGS` não lista mais `postgres`) e que `database`/`schema` funcionam sem aspas como identificadores do Postgres — tudo testado direto pela API do CloudBeaver a partir de uma sessão anônima nova, e o Jupyter abre direto em `/lab` (`curl http://localhost:8888/lab` devolve `200`, sem redirect de login) — sem nenhuma intervenção manual.
 
 Como tudo está pinado, o ambiente não deve mudar de comportamento sozinho entre uma aula e outra — só muda se você editar essas versões de propósito.
 

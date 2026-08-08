@@ -45,14 +45,16 @@ SILVER = "silver"
 GOLD = "gold"
 
 
-def trino_connection(catalog: str = "lakehouse"):
-    """Conexão DBAPI crua com o Trino. Catalogs disponíveis: 'lakehouse' e 'postgres'."""
-    return trino.dbapi.connect(host=_TRINO_HOST, port=_TRINO_PORT, user="student", catalog=catalog)
+def trino_connection():
+    """Conexão DBAPI crua com o Trino, já no catálogo "lakehouse" (o único que existe —
+    o Trino deste laboratório não enxerga o Postgres "fonte", de propósito).
+    """
+    return trino.dbapi.connect(host=_TRINO_HOST, port=_TRINO_PORT, user="student", catalog="lakehouse")
 
 
-def query(sql: str, catalog: str = "lakehouse") -> pd.DataFrame:
-    """Executa um SQL no Trino e devolve o resultado como DataFrame do pandas."""
-    conn = trino_connection(catalog=catalog)
+def query(sql: str) -> pd.DataFrame:
+    """Executa um SQL no Trino (catálogo "lakehouse") e devolve o resultado como DataFrame do pandas."""
+    conn = trino_connection()
     cur = conn.cursor()
     cur.execute(sql)
     rows = cur.fetchall()
@@ -60,14 +62,14 @@ def query(sql: str, catalog: str = "lakehouse") -> pd.DataFrame:
     return pd.DataFrame(rows, columns=columns)
 
 
-def run_sql(*statements: str, catalog: str = "lakehouse") -> None:
-    """Executa um ou mais comandos SQL no Trino sem se importar com o retorno.
+def run_sql(*statements: str) -> None:
+    """Executa um ou mais comandos SQL no Trino (catálogo "lakehouse") sem se importar com o retorno.
 
     Útil para DDL (CREATE SCHEMA/TABLE, DROP TABLE) e para CTAS
     (CREATE TABLE ... AS SELECT) — o jeito como as camadas silver e
     gold são construídas neste laboratório.
     """
-    conn = trino_connection(catalog=catalog)
+    conn = trino_connection()
     cur = conn.cursor()
     for stmt in statements:
         cur.execute(stmt)
