@@ -26,7 +26,6 @@ não pela API de arquivos do Jupyter — ver README):
 """
 import lakehouse_kit as lh
 import pandas as pd
-from decimal import Decimal
 
 # ---------------------------------------------------------------
 # 1. A fonte: um sistema transacional simulado
@@ -40,41 +39,15 @@ from decimal import Decimal
 # ---------------------------------------------------------------
 # Bronze não transforma nada: é uma cópia fiel do que existe na fonte,
 # em Parquet, dentro do MinIO. Cada tabela vira um arquivo em
-# bronze/<tabela>/<tabela>.parquet.
+# bronze/<tabela>/<tabela>.parquet, e fica cadastrada no Trino em
+# lakehouse.bronze.<tabela> — tudo isso é o que `lh.write_table` faz
+# (ver jupyter/notebooks/lakehouse_kit/__init__.py); aqui só declaramos
+# o schema de cada tabela na mão (`colunas_sql`) em vez de deixar
+# `write_table` adivinhar os tipos, pra ter DATE de verdade em vez de
+# TIMESTAMP (ver conversão de `order_date` abaixo) e não depender de
+# inferência automática numa tabela que faz parte da infraestrutura.
 
 TABELAS_FONTE = ["customers", "products", "orders", "order_items"]
-
-engine = lh.postgres()
-
-for tabela in TABELAS_FONTE:
-    df = pd.read_sql_table(tabela, engine)
-
-    # Colunas NUMERIC do Postgres chegam como Decimal. O Parquet gravaria
-    # isso como DECIMAL de precisão fixa, mas as tabelas bronze abaixo
-    # esperam DOUBLE — então convertemos aqui. É um tipo de "atrito" bem
-    # real de lakehouse: os tipos precisam bater em cada camada.
-    for coluna in df.columns:
-        if df[coluna].map(type).eq(Decimal).any():
-            df[coluna] = df[coluna].astype(float)
-
-    # O mesmo atrito acontece com DATE: o pandas guarda como datetime64
-    # (timestamp completo), e o Parquet gravaria como TIMESTAMP — mas
-    # declaramos DATE lá embaixo. Convertendo para date "puro" aqui, o
-    # Parquet grava o tipo DATE de verdade.
-    for coluna in df.columns:
-        if coluna.endswith("_date") and pd.api.types.is_datetime64_any_dtype(df[coluna]):
-            df[coluna] = df[coluna].dt.date
-
-    destino = lh.bronze_path(tabela)
-    df.to_parquet(destino, storage_options=lh.s3_storage_options(), index=False)
-    print(f"[bronze] {tabela}: {len(df)} linhas -> {destino}")
-
-# ---------------------------------------------------------------
-# 3. Registrando a bronze no catálogo do Trino
-# ---------------------------------------------------------------
-# Os arquivos já estão no MinIO, mas o Trino ainda não sabe que eles
-# existem. O Hive Metastore precisa de um CREATE TABLE dizendo onde
-# estão os arquivos e qual o schema de cada coluna.
 
 BRONZE_SCHEMAS = {
     "customers": "customer_id INTEGER, name VARCHAR, email VARCHAR, city VARCHAR, state VARCHAR, created_at TIMESTAMP",
@@ -83,18 +56,26 @@ BRONZE_SCHEMAS = {
     "order_items": "order_item_id INTEGER, order_id INTEGER, product_id INTEGER, quantity INTEGER, unit_price DOUBLE",
 }
 
-lh.run_sql(f"CREATE SCHEMA IF NOT EXISTS lakehouse.bronze WITH (location = 's3://{lh.bucket()}/bronze/')")
+engine = lh.postgres()
 
-for tabela, colunas in BRONZE_SCHEMAS.items():
-    location = f"s3://{lh.bucket()}/bronze/{tabela}/"
-    lh.run_sql(
-        f"DROP TABLE IF EXISTS lakehouse.bronze.{tabela}",
-        f"CREATE TABLE lakehouse.bronze.{tabela} ({colunas}) WITH (external_location = '{location}', format = 'PARQUET')",
-    )
-    print(f"[bronze] tabela registrada: lakehouse.bronze.{tabela}")
+for tabela in TABELAS_FONTE:
+    df = pd.read_sql_table(tabela, engine)
+
+    # `write_table` já converte Decimal -> float sozinho (Postgres NUMERIC
+    # chega como Decimal, e o Parquet não lida bem com isso), mas o
+    # atrito de DATE não dá pra automatizar: o pandas guarda datas como
+    # datetime64 (timestamp completo), e o Parquet gravaria como
+    # TIMESTAMP — só convertendo pra date "puro" aqui é que o Parquet
+    # grava DATE de verdade, batendo com o schema declarado acima.
+    for coluna in df.columns:
+        if coluna.endswith("_date") and pd.api.types.is_datetime64_any_dtype(df[coluna]):
+            df[coluna] = df[coluna].dt.date
+
+    lh.write_table(df, "bronze", tabela, colunas_sql=BRONZE_SCHEMAS[tabela])
+    print(f"[bronze] {tabela}: {len(df)} linhas -> lakehouse.bronze.{tabela}")
 
 # ---------------------------------------------------------------
-# 4. Camada Silver — join limpo
+# 3. Camada Silver — join limpo
 # ---------------------------------------------------------------
 # Um único modelo de vendas, juntando pedidos + itens + produtos +
 # clientes. A partir daqui, ninguém mais precisa saber que existem 4
@@ -130,7 +111,7 @@ lh.run_sql(
 print("[silver] lakehouse.silver.sales construída")
 
 # ---------------------------------------------------------------
-# 5. Camada Gold — agregados prontos para consumo
+# 4. Camada Gold — agregados prontos para consumo
 # ---------------------------------------------------------------
 
 lh.run_sql(f"CREATE SCHEMA IF NOT EXISTS lakehouse.gold WITH (location = 's3://{lh.bucket()}/gold/')")
