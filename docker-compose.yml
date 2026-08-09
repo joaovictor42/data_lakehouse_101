@@ -66,8 +66,9 @@ services:
 
   # -------------------------------------------------------------
   # MINIO — armazenamento de objetos S3-compatível.
-  # As camadas bronze/silver/gold são pastas (prefixos) dentro
-  # de um único bucket "lakehouse".
+  # As camadas bronze/silver/gold, mais uma pasta "landing" (zona de
+  # pouso pra arquivo cru que o aluno traz de fora — ver lakehouse_kit),
+  # são pastas (prefixos) dentro de um único bucket "lakehouse".
   # -------------------------------------------------------------
   minio:
     image: minio/minio:RELEASE.2025-09-07T16-13-09Z
@@ -94,8 +95,8 @@ services:
       retries: 10
 
   # -------------------------------------------------------------
-  # MINIO-INIT — tarefa única: cria o bucket e as "pastas"
-  # bronze/silver/gold para já nascerem visíveis no console.
+  # MINIO-INIT — tarefa única: cria o bucket e as "pastas" landing,
+  # bronze, silver e gold para já nascerem visíveis no console.
   # -------------------------------------------------------------
   minio-init:
     image: minio/mc:RELEASE.2025-08-13T08-35-41Z

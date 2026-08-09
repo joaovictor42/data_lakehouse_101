@@ -38,6 +38,15 @@ E o par que fecha o ciclo — construir uma camada da arquitetura medalhão
     lh.query("SELECT * FROM lakehouse.bronze.minha_tabela")  # já funciona
     lh.drop_table("bronze", "minha_tabela")        # desfaz (tabela + arquivos)
 
+E, um passo antes de tudo isso — uma "zona de pouso" (`landing`) pra
+arquivo cru que chega de fora (ex: um CSV que você arrastou pro
+JupyterLab), pra praticar capturar e trazer pro lakehouse:
+
+    lh.upload_to_landing("meu_arquivo.csv")  # sobe um arquivo local pra landing
+    lh.list_landing()                        # o que já chegou na landing
+    df = lh.read_landing("meu_arquivo.csv")  # captura: lê o arquivo cru
+    lh.write_table(df, "bronze", "minha_tabela")  # e daqui em diante é o de sempre
+
 Não é preciso configurar host, porta, usuário ou senha de nada — tudo
 já vem das variáveis de ambiente definidas no docker-compose.
 """
@@ -64,6 +73,7 @@ _PG_PASSWORD = os.environ.get("LAKEHOUSE_PG_PASSWORD", "trilha123")
 _PG_DB = os.environ.get("LAKEHOUSE_PG_DB", "database")
 _PG_SCHEMA = os.environ.get("LAKEHOUSE_PG_SCHEMA", "schema")
 
+LANDING = "landing"
 BRONZE = "bronze"
 SILVER = "silver"
 GOLD = "gold"
@@ -172,6 +182,78 @@ def silver_path(tabela: str = "") -> str:
 def gold_path(tabela: str = "") -> str:
     """Equivalente a `bronze_path`, para a camada gold."""
     return _layer_path(GOLD, tabela)
+
+
+# ---------------------------------------------------------------------
+# Landing — zona de pouso pra arquivo cru (CSV, JSON, Parquet...) que
+# chega de fora, antes de virar bronze. Diferente de bronze/silver/gold,
+# ninguém escreve aqui automaticamente (nem o pipeline-init) — existe
+# só vazia, criada pelo minio-init (ver scripts/minio-init.sh), esperando
+# o aluno trazer um arquivo (`upload_to_landing`) e "capturá-lo" pro
+# lakehouse na mão (`read_landing` + `write_table`).
+# ---------------------------------------------------------------------
+
+
+def landing_path(arquivo: str = "") -> str:
+    """Caminho s3:// pra um arquivo (ou pro prefixo, sem argumento) na landing.
+
+    Diferente de `bronze_path`/`silver_path`/`gold_path`, não assume o
+    formato `<nome>/<nome>.parquet`: a landing guarda o arquivo cru,
+    direto sob `landing/`, com o nome e a extensão que ele chegou (CSV,
+    JSON, Parquet...) — porque ele ainda não é uma tabela, é só um
+    arquivo esperando ser capturado.
+    """
+    if not arquivo:
+        return f"s3://{_S3_BUCKET}/landing/"
+    return f"s3://{_S3_BUCKET}/landing/{arquivo}"
+
+
+def list_landing(prefix: str = "") -> list:
+    """Lista os arquivos que chegaram na landing (equivalente a `lh.list_layer("landing", prefix)`)."""
+    return list_layer(LANDING, prefix)
+
+
+def upload_to_landing(caminho_local: str, arquivo: str = None) -> str:
+    """Sobe um arquivo local pra landing no MinIO — o primeiro passo de
+    "chegou um arquivo novo, e agora?".
+
+    Pensado pro caso mais comum em aula: o aluno arrasta um CSV pro
+    JupyterLab (fica em `notebooks/`, visível no explorador de arquivos
+    — ver README) e chama `lh.upload_to_landing("meu_arquivo.csv")`
+    numa célula, simulando um arquivo "chegando de fora" no lakehouse.
+
+    `arquivo` é o nome que ele fica na landing; se omitido, usa o mesmo
+    nome-base do arquivo local (`os.path.basename(caminho_local)`).
+    Devolve o caminho `s3://` de destino, pronto pra `lh.read_landing(...)`.
+    """
+    if arquivo is None:
+        arquivo = os.path.basename(caminho_local)
+    s3().upload_file(caminho_local, _S3_BUCKET, f"landing/{arquivo}")
+    return landing_path(arquivo)
+
+
+def read_landing(arquivo: str) -> pd.DataFrame:
+    """Lê (\"captura\") um arquivo da landing direto do MinIO, devolvendo
+    um DataFrame do pandas — normalmente o passo seguinte a um
+    `lh.upload_to_landing(...)`, e o passo anterior a um
+    `lh.write_table(df, "bronze", ...)` pra catalogar o resultado.
+
+    O formato é detectado pela extensão do nome do arquivo: `.parquet`
+    -> `pd.read_parquet`, `.json` -> `pd.read_json` (tenta um JSON
+    "normal" primeiro; se não der, tenta JSON Lines, um objeto por
+    linha), qualquer outra extensão (`.csv` incluso) -> `pd.read_csv`.
+    """
+    caminho = landing_path(arquivo)
+    opts = s3_storage_options()
+    extensao = arquivo.rsplit(".", 1)[-1].lower() if "." in arquivo else ""
+    if extensao == "parquet":
+        return pd.read_parquet(caminho, storage_options=opts)
+    if extensao == "json":
+        try:
+            return pd.read_json(caminho, storage_options=opts)
+        except ValueError:
+            return pd.read_json(caminho, storage_options=opts, lines=True)
+    return pd.read_csv(caminho, storage_options=opts)
 
 
 # ---------------------------------------------------------------------

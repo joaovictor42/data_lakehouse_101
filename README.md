@@ -54,7 +54,7 @@ MinIO (armazenamento S3) ──────────────────�
                                 Jupyter (lakehouse_kit: já conectado, roda de novo ao vivo)
 ```
 
-- **MinIO**: armazenamento S3-compatível. As camadas bronze/silver/gold são pastas dentro de um único bucket `lakehouse`.
+- **MinIO**: armazenamento S3-compatível. As camadas bronze/silver/gold, mais uma pasta `landing` (zona de pouso pra arquivo cru — ver `lakehouse_kit` abaixo), são pastas dentro de um único bucket `lakehouse`.
 - **Hive Metastore**: registra, para o Trino, quais tabelas existem e onde estão os arquivos no MinIO — é o que transforma "arquivos soltos" em "tabelas consultáveis por SQL". Usa o Postgres como banco de metadados (peça de infraestrutura, não aparece na aula).
 - **Trino**: motor de consulta SQL, com um único catálogo: `lakehouse` (as camadas bronze/silver/gold). De propósito sem um catálogo apontando pro Postgres "fonte" — ver "Por que o Trino não enxerga o Postgres" abaixo.
 - **pipeline-init**: roda `trino/init/construir_pipeline.py` uma vez, sozinho, assim que Postgres/MinIO/Trino ficam prontos — é o que garante que bronze/silver/gold já existam antes do DBeaver-web ficar acessível. Não aparece na aula (é só infraestrutura); ver "Por que o pipeline roda sozinho" abaixo.
@@ -91,6 +91,16 @@ Se um dia quiser voltar a ver tudo (por exemplo, pra debugar), tire o `--ServerA
 Com isso, o ciclo completo da arquitetura medalhão fica ao alcance de uma célula: ler de qualquer origem (`lh.postgres()`, um CSV, uma API, outra tabela via `lh.query(...)`...), transformar com pandas à vontade, e `lh.write_table(df, "bronze", "minha_tabela")` — sem escrever SQL de DDL nenhum. O notebook `explorando_o_lakehouse.ipynb` tem um exemplo completo na seção 5 ("Construindo sua própria camada").
 
 `trino/init/construir_pipeline.py` (o script de infraestrutura que constrói bronze/silver/gold sozinho) usa exatamente essas mesmas funções pra gravar a bronze — não é um mecanismo separado, é dogfooding: bronze é só um `write_table` chamado com um `colunas_sql` explícito em vez de deixar a inferência automática adivinhar (pra garantir `DATE` de verdade em `order_date`, não `TIMESTAMP`). Silver e gold continuam sendo construídas por SQL puro (`lh.run_sql(...)` com `CREATE TABLE ... AS SELECT`) — `write_table` é para quando o dado começa como DataFrame do pandas, não para transformações que o próprio Trino já faz bem.
+
+#### `landing`: um passo antes da bronze
+
+O bucket `lakehouse` nasce com uma quarta pasta, `landing` (criada vazia pelo `minio-init`, junto de bronze/silver/gold — ver `scripts/minio-init.sh`), pensada como zona de pouso pra arquivo cru que chega de fora — diferente das outras três, **nada escreve nela automaticamente**, nem o `pipeline-init`. É praticar o primeiro passo de um pipeline de verdade: "chegou um arquivo, e agora?"
+
+- `lh.upload_to_landing(caminho_local, arquivo=None)` — sobe um arquivo local pra landing. Pensado pro caso comum em aula: arraste um CSV pro JupyterLab (cai em `notebooks/`, que já é a raiz visível — ver README acima) e chame `lh.upload_to_landing("meu_arquivo.csv")` numa célula.
+- `lh.list_landing(prefix="")` — o que já chegou na landing.
+- `lh.read_landing(arquivo)` — "captura": lê o arquivo direto do MinIO como DataFrame, detectando o formato pela extensão (`.csv`, `.json` — tenta JSON normal, depois JSON Lines — ou `.parquet`).
+
+O ciclo completo, então, é `upload_to_landing` (chega um arquivo) -> `read_landing` (captura) -> transformar com pandas -> `write_table` (publica como bronze, já catalogada) -> `query` (consulta via Trino). `landing_path(arquivo="")` existe também, equivalente a `bronze_path`/`silver_path`/`gold_path`, mas sem assumir o formato `<nome>/<nome>.parquet` das outras três (a landing guarda o arquivo cru, do jeito e com o nome que chegou).
 
 ### Por que um schema `schema` em vez do `public` padrão
 
@@ -137,6 +147,8 @@ Este ambiente foi validado em 08/2026 com um `docker compose down -v && docker c
 
 `lh.write_table`/`lh.read_table`/`lh.drop_table` também testados ao vivo nessa mesma validação: um DataFrame com coluna `int`, `float`, `bool`, `datetime64` e `datetime.date` gravado com `write_table` sem `colunas_sql` gerou exatamente `bigint`/`double`/`boolean`/`timestamp(3)`/`date` no `DESCRIBE` do Trino (inferência automática); uma leitura real via `lh.postgres()` (coluna `NUMERIC` do Postgres, chega como `Decimal`) gravou sem erro, confirmando a conversão automática pra `float`; e `drop_table` confirmado removendo tanto a entrada do catálogo (`SELECT` depois falha com `TrinoUserError`, tabela não existe) quanto os arquivos no MinIO (`list_layer` não lista mais nada com o prefixo). O `trino/init/construir_pipeline.py` foi refatorado pra usar `write_table` na bronze (em vez de `to_parquet` + `CREATE TABLE` manuais) e continua rodando com exit code 0.
 
+A pasta `landing` e o trio `lh.upload_to_landing`/`lh.list_landing`/`lh.read_landing` também testados ao vivo: `landing/` nasce só com o `.keep` num ambiente novo (confirmado logo após um `docker compose up -d --build` do zero); um CSV local subiu com `upload_to_landing` e apareceu em `list_landing`; `read_landing` capturou de volta um CSV, um JSON "normal" (lista de registros), um JSON Lines (um objeto por linha) e um Parquet, todos com o conteúdo batendo; e o ciclo completo (`upload_to_landing` -> `read_landing` -> `write_table` -> `query`) rodou de ponta a ponta com dado real. O notebook `explorando_o_lakehouse.ipynb`, com a seção 6 nova (captura de landing), roda inteiro via `nbconvert --execute` sem erro, incluindo a limpeza do arquivo local simulado.
+
 Como tudo está pinado, o ambiente não deve mudar de comportamento sozinho entre uma aula e outra — só muda se você editar essas versões de propósito.
 
 ## Troubleshooting
@@ -155,7 +167,7 @@ Sem token/senha é o comportamento esperado (`command:` do serviço `jupyter` no
 
 ### Por que o MinIO está pinado numa versão específica (`RELEASE.2025-09-07T16-13-09Z`) e sem Console de admin
 
-Em 2025 a MinIO removeu as ações administrativas (apagar bucket, gerenciar usuários/políticas etc.) do Console web open-source, empurrando pra versão paga (AIStor). Esta imagem já é de depois dessa mudança, de propósito: o Console em http://localhost:9001 serve só pra *olhar* os arquivos (ótimo pra mostrar bronze/silver/gold enchendo em tempo real na aula), sem botões de administração que não fazem falta aqui — nenhuma célula dos notebooks depende deles, e o único caso de uso administrativo (criar o bucket e as pastas `bronze/silver/gold`) já roda sozinho, via `mc`, no serviço `minio-init`.
+Em 2025 a MinIO removeu as ações administrativas (apagar bucket, gerenciar usuários/políticas etc.) do Console web open-source, empurrando pra versão paga (AIStor). Esta imagem já é de depois dessa mudança, de propósito: o Console em http://localhost:9001 serve só pra *olhar* os arquivos (ótimo pra mostrar bronze/silver/gold enchendo em tempo real na aula), sem botões de administração que não fazem falta aqui — nenhuma célula dos notebooks depende deles, e o único caso de uso administrativo (criar o bucket e as pastas `landing`/`bronze`/`silver`/`gold`) já roda sozinho, via `mc`, no serviço `minio-init`.
 
 Se um dia essa tag específica sumir do Docker Hub — o repositório oficial `minio/minio` foi arquivado, então releases futuras não vêm mais dele — as opções são:
 
