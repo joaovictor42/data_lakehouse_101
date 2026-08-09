@@ -16,8 +16,9 @@
 #   Jupyter (ver README) se quiser atualizar o lakehouse depois de
 #   inserir dado novo no Postgres.
 #
-#   Jupyter (lakehouse_lab pré-instalado; notebook exploratório pra
-#            consultar e visualizar o que o pipeline já construiu)
+#   Jupyter (lakehouse_kit editável dentro de notebooks/; notebook
+#            exploratório pra consultar e visualizar o que o pipeline
+#            já construiu)
 #
 #   DBeaver-web (CloudBeaver), à parte: cliente SQL web já conectado
 #   no Postgres, direto no schema "schema" — pra inspecionar a fonte
@@ -184,12 +185,18 @@ services:
       - ./trino/etc:/etc/trino
 
   # -------------------------------------------------------------
-  # JUPYTER — laboratório exploratório do aluno. Já vem com o
-  # pacote `lakehouse_lab` instalado: `import lakehouse_lab as lh`
-  # e todas as conexões (Trino, MinIO, Postgres) já funcionam. O
-  # pipeline bronze -> silver -> gold já foi construído sozinho pelo
+  # JUPYTER — laboratório exploratório do aluno. Já vem com o pacote
+  # `lakehouse_kit` pronto: `import lakehouse_kit as lh` e todas as
+  # conexões (Trino, MinIO, Postgres) já funcionam. O pipeline
+  # bronze -> silver -> gold já foi construído sozinho pelo
   # `pipeline-init` (ver trino/init/construir_pipeline.py) — aqui é só
   # pra explorar o resultado (notebook `explorando_o_lakehouse.ipynb`).
+  #
+  # `lakehouse_kit` fica dentro de `notebooks/` de propósito (não
+  # instalado "escondido" em outro lugar da imagem): o aluno vê a pasta
+  # no explorador de arquivos do JupyterLab e pode abrir/editar o
+  # `__init__.py` — mudou algo ali, é só rodar de novo a célula do
+  # `import` (ou reiniciar o kernel).
   #
   # `command` desliga token e senha (testado: sem isso, mesmo com
   # JUPYTER_TOKEN="" o servidor gera um token aleatório e pede login),
@@ -231,6 +238,10 @@ services:
     ports:
       - "8888:8888"
     volumes:
+      # jupyter/notebooks/lakehouse_kit/ vem junto (é uma subpasta
+      # daqui) — é assim que o aluno vê e edita o pacote pelo próprio
+      # JupyterLab, e é assim que `import lakehouse_kit` funciona sem
+      # PYTHONPATH nenhum (ver comentário no Dockerfile).
       - ./jupyter/notebooks:/home/jovyan/notebooks
       # Só leitura: dá pra rodar o pipeline de novo na mão (terminal do
       # JupyterLab, ou `!python ...` numa célula) sem editar o script
@@ -274,8 +285,20 @@ services:
       LAKEHOUSE_PG_PASSWORD: ${POSTGRES_PASSWORD}
       LAKEHOUSE_PG_DB: ${POSTGRES_DB}
       LAKEHOUSE_PG_SCHEMA: ${POSTGRES_SCHEMA}
+      # Este serviço não monta ./jupyter/notebooks inteiro (só o
+      # trino-init abaixo) — sem PYTHONPATH, `import lakehouse_kit` no
+      # construir_pipeline.py não acharia o pacote montado logo abaixo,
+      # porque `python3 /caminho/script.py` resolve imports a partir da
+      # pasta do script, não do cwd do processo (diferente do kernel
+      # interativo do serviço `jupyter`, que não precisa disso).
+      PYTHONPATH: /home/jovyan
     volumes:
       - ./trino/init:/home/jovyan/trino-init:ro
+      # Read-only: este serviço só importa lakehouse_kit, nunca o edita
+      # — é o mesmo código-fonte que o aluno vê/edita no JupyterLab (ver
+      # comentário no serviço `jupyter` acima), montado à parte porque
+      # este serviço não monta ./jupyter/notebooks inteiro.
+      - ./jupyter/notebooks/lakehouse_kit:/home/jovyan/lakehouse_kit:ro
     command: python3 /home/jovyan/trino-init/construir_pipeline.py
 
   # -------------------------------------------------------------

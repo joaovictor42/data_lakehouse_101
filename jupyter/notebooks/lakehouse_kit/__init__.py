@@ -1,9 +1,15 @@
 """
-lakehouse_lab — conexões pré-configuradas para o laboratório de Data Lakehouse.
+lakehouse_kit — conexões pré-configuradas para o laboratório de Data Lakehouse.
+
+Este é o código-fonte real do pacote, exposto de propósito dentro de
+`notebooks/` (em vez de instalado "escondido" em outro lugar da imagem):
+o aluno pode abrir, ler e editar `lakehouse_kit/__init__.py` no próprio
+JupyterLab — mudou algo aqui, é só rodar de novo a célula com o
+`import` (ou reiniciar o kernel) para pegar a mudança.
 
 Uso básico:
 
-    import lakehouse_lab as lh
+    import lakehouse_kit as lh
 
     lh.query("SELECT * FROM lakehouse.gold.sales_by_day")   # -> DataFrame do pandas
     lh.run_sql("CREATE SCHEMA IF NOT EXISTS lakehouse.bronze ...")  # DDL/CTAS sem retorno

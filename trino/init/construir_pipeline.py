@@ -24,7 +24,7 @@ não pela API de arquivos do Jupyter — ver README):
     - Terminal do JupyterLab: python /home/jovyan/trino-init/construir_pipeline.py
     - Célula de notebook:     !python /home/jovyan/trino-init/construir_pipeline.py
 """
-import lakehouse_lab as lh
+import lakehouse_kit as lh
 import pandas as pd
 from decimal import Decimal
 

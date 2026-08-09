@@ -4,7 +4,7 @@
 -- camada bronze. Roda no banco padrão (${POSTGRES_DB} / database).
 --
 -- Tudo vive num schema próprio chamado "schema" (em vez do "public"
--- padrão) de propósito: assim o dbeaver-web e o lakehouse_lab já abrem
+-- padrão) de propósito: assim o dbeaver-web e o lakehouse_kit já abrem
 -- direto num único schema com só as 4 tabelas da aula, sem o aluno
 -- precisar entender o que é "public" ou navegar pelos schemas de
 -- sistema do Postgres. "SCHEMA" é uma palavra reservada em vários

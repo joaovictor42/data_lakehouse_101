@@ -51,7 +51,7 @@ MinIO (armazenamento S3) ──────────────────�
                                    bronze -> silver -> gold ─────────┤
                                                   │                  │
                                                   ▼                  │
-                                Jupyter (lakehouse_lab: já conectado, roda de novo ao vivo)
+                                Jupyter (lakehouse_kit: já conectado, roda de novo ao vivo)
 ```
 
 - **MinIO**: armazenamento S3-compatível. As camadas bronze/silver/gold são pastas dentro de um único bucket `lakehouse`.
@@ -59,7 +59,7 @@ MinIO (armazenamento S3) ──────────────────�
 - **Trino**: motor de consulta SQL, com um único catálogo: `lakehouse` (as camadas bronze/silver/gold). De propósito sem um catálogo apontando pro Postgres "fonte" — ver "Por que o Trino não enxerga o Postgres" abaixo.
 - **pipeline-init**: roda `trino/init/construir_pipeline.py` uma vez, sozinho, assim que Postgres/MinIO/Trino ficam prontos — é o que garante que bronze/silver/gold já existam antes do DBeaver-web ficar acessível. Não aparece na aula (é só infraestrutura); ver "Por que o pipeline roda sozinho" abaixo.
 - **DBeaver-web (CloudBeaver)**: cliente SQL web pra inspecionar o Postgres e o Trino sem precisar instalar nada — abre sem login, com duas conexões já prontas: **"postgres"** (direto no schema `schema`) e **"trino"** (direto no catálogo `lakehouse`).
-- **Jupyter**: onde a aula explora o que já foi construído. Pacote `lakehouse_lab` pré-instalado (`import lakehouse_lab as lh`) com todas as conexões prontas (Postgres, MinIO, Trino) e variáveis/atalhos para os caminhos das camadas (`lh.bronze_path(...)`, `lh.silver_path(...)`, `lh.gold_path(...)`). Um notebook:
+- **Jupyter**: onde a aula explora o que já foi construído. Pacote `lakehouse_kit` pré-instalado (`import lakehouse_kit as lh`) com todas as conexões prontas (Postgres, MinIO, Trino) e variáveis/atalhos para os caminhos das camadas (`lh.bronze_path(...)`, `lh.silver_path(...)`, `lh.gold_path(...)`). Diferente de uma lib "de verdade" instalada via `pip`, `lakehouse_kit` mora como código-fonte visível dentro de `jupyter/notebooks/lakehouse_kit/` — o aluno pode abrir `__init__.py` pelo próprio JupyterLab, ler como cada conexão é montada, e editar se quiser (rodar de novo a célula do `import`, ou reiniciar o kernel, pega a mudança). Um notebook:
   - `explorando_o_lakehouse.ipynb` — consulta e visualiza o que o pipeline construiu.
   - `trino/init/construir_pipeline.py` também fica acessível de dentro do Jupyter (montado, só leitura, em `/home/jovyan/trino-init/`) — dá pra ler o código-fonte ali, ou rodar de novo com `!python /home/jovyan/trino-init/construir_pipeline.py` numa célula.
 
@@ -82,7 +82,7 @@ Se um dia quiser voltar a ver tudo (por exemplo, pra debugar), tire o `--ServerA
 
 ### Por que um schema `schema` em vez do `public` padrão
 
-As 4 tabelas da fonte (`customers`, `products`, `orders`, `order_items`) vivem no schema `schema` (criado em `postgres/init/02_dados_fonte.sql`), não no `public` padrão do Postgres. É só pra reduzir o que o aluno precisa entender: tanto o `lakehouse_lab` (`lh.postgres()`) quanto a conexão "postgres" do DBeaver-web já abrem com esse schema como padrão, então ninguém precisa saber o que é `public` nem navegar pelos schemas de sistema do Postgres (`pg_catalog` etc.) pra achar as 4 tabelas que importam. Se quiser mudar o nome, o valor está em `POSTGRES_SCHEMA` no `.env` — mas como esse arquivo é só documentativo (nem o `postgres/init/02_dados_fonte.sql` nem o `dbeaver/initial-data-sources.conf` leem o `.env`), mudar o nome exige editar os três lugares junto.
+As 4 tabelas da fonte (`customers`, `products`, `orders`, `order_items`) vivem no schema `schema` (criado em `postgres/init/02_dados_fonte.sql`), não no `public` padrão do Postgres. É só pra reduzir o que o aluno precisa entender: tanto o `lakehouse_kit` (`lh.postgres()`) quanto a conexão "postgres" do DBeaver-web já abrem com esse schema como padrão, então ninguém precisa saber o que é `public` nem navegar pelos schemas de sistema do Postgres (`pg_catalog` etc.) pra achar as 4 tabelas que importam. Se quiser mudar o nome, o valor está em `POSTGRES_SCHEMA` no `.env` — mas como esse arquivo é só documentativo (nem o `postgres/init/02_dados_fonte.sql` nem o `dbeaver/initial-data-sources.conf` leem o `.env`), mudar o nome exige editar os três lugares junto.
 
 ### Por que o Trino não enxerga o Postgres
 
@@ -131,9 +131,9 @@ Como tudo está pinado, o ambiente não deve mudar de comportamento sozinho entr
 
 O Trino usa a porta **8082** no host (não 8080) de propósito, para não colidir com outros projetos Docker que você já tenha rodando. Se mesmo assim alguma porta bater com outro container seu, pare o outro projeto (`docker compose down` nele) ou troque o mapeamento de porta no `docker-compose.yml` deste projeto (lado esquerdo do `"host:container"`).
 
-### `import lakehouse_lab` falha no notebook
+### `import lakehouse_kit` falha no notebook
 
-O pacote fica em `/home/jovyan/lakehouse_lab`, mas o kernel do Jupyter roda com `cwd` em `/home/jovyan/notebooks` (onde ficam os `.ipynb`) — por isso o `Dockerfile` do Jupyter define `ENV PYTHONPATH=/home/jovyan`. Se você mudar a estrutura de pastas do projeto Jupyter, lembre de manter esse `PYTHONPATH` (ou instalar `lakehouse_lab` como pacote de verdade via `pip install`).
+O pacote é a pasta `jupyter/notebooks/lakehouse_kit/`, montada junto do resto de `notebooks/` — o kernel do Jupyter roda com `cwd` em `/home/jovyan/notebooks`, e o Python inclui automaticamente o `cwd` do processo interativo no `sys.path`, então `import lakehouse_kit` acha a pasta ali do lado sem precisar de `PYTHONPATH`. Se der erro, o mais provável é a pasta ter sumido ou mudado de nome — confira `docker exec data_lakehouse_101-jupyter ls /home/jovyan/notebooks` (deve listar `lakehouse_kit`) e se `jupyter/notebooks/lakehouse_kit/__init__.py` existe no repo. Se você renomear essa pasta de propósito, lembre de atualizar o `import lakehouse_kit as lh` nos dois lugares que o fazem: o notebook (`explorando_o_lakehouse.ipynb`) e `trino/init/construir_pipeline.py` — e, para este último, o mount/`PYTHONPATH` do serviço `pipeline-init` no `docker-compose.yml` (ele não roda dentro de `notebooks/`, então depende de `PYTHONPATH` explícito — ver comentário lá).
 
 ### O Jupyter (http://localhost:8888) pede token, ou quero um token de volta
 
@@ -189,10 +189,11 @@ Não deveria mais acontecer por padrão — o serviço `pipeline-init` já roda 
 docker compose up -d --build jupyter
 ```
 
-Se a mudança for no `jupyter/Dockerfile` ou no pacote `lakehouse_lab`, rebuilde o `pipeline-init` também (ele usa a mesma imagem, mas é um serviço separado — recriar só o `jupyter` não recria ele):
+Se a mudança for no `jupyter/Dockerfile`, rebuilde o `pipeline-init` também (ele usa a mesma imagem, mas é um serviço separado — recriar só o `jupyter` não recria ele):
 ```bash
 docker compose up -d --build jupyter pipeline-init
 ```
+Editar o pacote `lakehouse_kit` (`jupyter/notebooks/lakehouse_kit/__init__.py`) **não** precisa de rebuild nenhum — é código-fonte montado, não copiado pra imagem (ver comentário no `Dockerfile` do Jupyter). Pro `jupyter`, a mudança já vale na próxima vez que uma célula rodar `import`. Pro `pipeline-init`, como ele só roda uma vez na subida do ambiente, é preciso recriar o container pra ele rodar de novo com a versão editada: `docker compose up -d pipeline-init` (sem `--build`, já basta).
 
 ### O DBeaver-web (http://localhost:8978) pede login, ou uma das conexões não aparece
 
